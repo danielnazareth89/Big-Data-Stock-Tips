@@ -1,0 +1,1 @@
+This project also calculated most and least volatile stocks, but using Apache Pig as opposed to conventional Map-Reduce. Included is the pig script, common report for Pig and Hive and the shell script needed to run the program on my university datacenter.

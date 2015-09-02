@@ -1,0 +1,147 @@
+#!/bin/bash
+#SBATCH --partition=debug
+#SBATCH --time=01:30:00
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=2
+#SBATCH --exclusive
+#SBATCH --job-name="test_hive"
+#SBATCH --output=test-hivesmall2nodes.out
+#SBATCH --mail-user=dnazaret@buffalo.edu
+#SBATCH --mail-type=ALL
+#Specifies that the job will be requeued after a node failure.
+#The default is that the job will not be requeued.
+#
+#This SLURM script is modified version of the SDSC script
+# found in /util/academic/myhadoop/myHadoop-0.30b/examples.
+# CDC January 29, 2015
+#
+echo "SLURM_JOBID="$SLURM_JOBID
+echo "SLURM_JOB_NODELIST"=$SLURM_JOB_NODELIST
+echo "SLURM_NNODES"=$SLURM_NNODES
+echo "SLURMTMPDIR="$SLURMTMPDIR
+
+echo "working directory = "$SLURM_SUBMIT_DIR
+
+module load java/1.6.0_22
+module load hadoop/2.5.1
+module load hive/0.14.0
+module load myhadoop/0.30b
+module list
+echo "MH_HOME="$MH_HOME
+echo "HADOOP_HOME="$HADOOP_HOME
+echo "Setting HADOOP to use SLURMTMPDIR on the local disk"
+export MH_SCRATCH_DIR=$SLURMTMPDIR
+echo "MH_SCRATCH_DIR="$MH_SCRATCH_DIR
+#### Set this to the directory where Hadoop configs should be generated
+# Don't change the name of this variable (HADOOP_CONF_DIR) as it is
+# required by Hadoop - all config files will be picked up from here
+#
+# Make sure that this is accessible to all nodes
+export HADOOP_CONF_DIR=$SLURM_SUBMIT_DIR/config-$SLURM_JOBID
+export HIVE_CONF_DIR=$SLURM_SUBMIT_DIR/config-$SLURM_JOBID
+echo "create diretory for HIVE metadata"
+### Set up the configuration
+# Make sure number of nodes is the same as what you have requested from PBS
+# usage: $myhadoop-configure.sh -h
+# this is the non-persistent mode
+NPROCS=`srun --nodes=${SLURM_NNODES} bash -c 'hostname' |wc -l`
+echo "-------Set up the configurations for myHadoop"
+$MH_HOME/bin/myhadoop-configure.sh 
+#
+cp $HIVE_HOME/conf/hive-env.sh-sample $HIVE_CONF_DIR/hive-env.sh
+cp $HIVE_HOME/conf/hive-default.xml-sample $HIVE_CONF_DIR/hive-default.xml
+sed -i 's:MY_HIVE_SCRATCH:'"$SLURMTMPDIR"':g' $HIVE_CONF_DIR/hive-default.xml
+cp $HIVE_HOME/conf/hive-log4j.properties-sample $HIVE_CONF_DIR/hive-log4j.properties
+sed -i 's:MY_HIVE_DIR:'"$SLURM_SUBMIT_DIR"':' $HIVE_CONF_DIR/hive-log4j.properties
+ls -l $HADOOP_CONF_DIR
+echo "-------Start hdfs and yarn ---"
+$HADOOP_HOME/sbin/start-all.sh
+#### Format HDFS, if this is the first time or not a persistent instance
+echo "-------Show Report ---"
+#$HADOOP_HOME/bin/hadoop dfsadmin -report
+echo "-------make directory ---"
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -mkdir /tmp
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -mkdir -p /user/hive/warehouse
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -chmod g+w /tmp
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -chmod g+w /user/hive/warehouse
+echo "-------list warehouse directory ---"
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -ls /user/hive/warehouse
+
+echo "-------make directory ---"
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -mkdir /input
+echo "-------list directory ---"
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -ls /
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -ls /input
+echo "-------copy file to hdfs ---"
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -put $1/*.csv /input/
+$HADOOP_HOME/bin/hdfs --config $HADOOP_CONF_DIR dfs -ls /input/
+
+$HIVE_HOME/bin/hive -e "set hive.map.aggr=false;"
+
+$HIVE_HOME/bin/hive -e "CREATE TABLE IF NOT EXISTS stocks_1(Date STRING,Open DOUBLE,High DOUBLE,Low DOUBLE,Close DOUBLE,Volume DOUBLE,AdjClose DOUBLE) ROW FORMAT DELIMITED FIELDS TERMINATED BY '\054'   STORED AS TEXTFILE;"
+
+$HIVE_HOME/bin/hive -e "load data inpath 'hdfs:///input/' overwrite into table stocks_1;"                                                                      
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_2(file string,adjclose double,year int,month int, day int);"
+
+
+$HIVE_HOME/bin/hive -e "from stocks_1 s insert overwrite table stocks_2 select s.INPUT__FILE__NAME,s.AdjClose,substr(s.Date,1,4),substr(s.Date,6,2),substr(s.Date,9,2);"
+
+
+
+
+$HIVE_HOME/bin/hive -e "create table if not exists group_stocks (file string,year int, month int);"
+$HIVE_HOME/bin/hive -e "insert overwrite table group_stocks select * from stocks_2 group by file,year,month;"
+
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_3(file string,adjclose double,year int,month int,day int);"
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_3 select stocks_2.file,stocks_2.adjclose,stocks_2.year,stocks_2.month,stocks_2.day from stocks_2 join group_stocks on (stocks_2.file = group_stocks.file and stocks_2.year = group_stocks.year and stocks_2.month = group_stocks.month);"
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_4(max_day int,file string,year int, month int, max_day2 int);"
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_4 select max(day),* from stocks_3 group by file,year,month;"
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_5(file string,adjclose_maxday double,year int,month int, day int);"
+
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_5 select stocks_3.file,stocks_3.adjclose,stocks_3.year,stocks_3.month,stocks_3.day from stocks_3 join stocks_4 on(stocks_3.file=stocks_4.file and stocks_3.year=stocks_4.year and stocks_3.month=stocks_4.month and stocks_3.day=stocks_4.max_day);"
+
+
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_4 select min(day),* from stocks_3 group by file,year,month;"
+
+
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_6(file string,adjclose_minday double,year int,month int, day int);"
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_6 select stocks_3.file,stocks_3.adjclose,stocks_3.year,stocks_3.month,stocks_3.day from stocks_3 join stocks_4 on(stocks_3.file=stocks_4.file and stocks_3.year=stocks_4.year and stocks_3.month=stocks_4.month and stocks_3.day=stocks_4.max_day);"
+
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_7(file string, year int, month int,ROR double);"
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_7 select stocks_5.file,stocks_5.year,stocks_5.month,((stocks_5.adjclose_maxday-stocks_6.adjclose_minday)/stocks_6.adjclose_minday) as ROR from stocks_5 join stocks_6 on(stocks_5.file=stocks_6.file and stocks_5.year=stocks_6.year and stocks_5.month=stocks_6.month);"
+
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_8(file string,month_count int,average_ror double);"
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_8 select file,count(ror),avg(ror) from stocks_7 group by file;"
+
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_9(file string,year int,month int,ror double,month_count int,average_ror double);"
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_9 select stocks_7.file,stocks_7.year,stocks_7.month,stocks_7.ror,stocks_8.month_count,stocks_8.average_ror from stocks_7 join stocks_8 on(stocks_7.file=stocks_8.file);"
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_10(file string,month_count int,mean_square double);"
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_10 select file,month_count,((ror-average_ror)*(ror-average_ror)) from stocks_9;"
+
+$HIVE_HOME/bin/hive -e "create table if not exists stocks_11(file string, volatility double);"
+$HIVE_HOME/bin/hive -e "insert overwrite table stocks_11 select regexp_replace(file,'_copy_1.csv',''),sqrt((sum(mean_square))/(month_count-1)) as volatility from stocks_10 group by file,month_count;"
+
+echo "---------top 10 stocks  with highest volatilities-----------"
+
+$HIVE_HOME/bin/hive -e "select * from stocks_11 where volatility is not null and volatility>0 order by volatility desc limit 10;"
+
+echo "--------10 stocks with lowest volatilities--------------------"
+
+$HIVE_HOME/bin/hive -e "select * from stocks_11 where volatility is not null and volatility>0 order by volatility asc limit 10;"
+
+
+echo "-------Stop hdfs and yarn ---"
+$HADOOP_HOME/sbin/stop-all.sh
+
+#### Clean up the working directories after job completion
+$MH_HOME/bin/myhadoop-cleanup.sh
+

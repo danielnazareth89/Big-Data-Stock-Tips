@@ -1,0 +1,1 @@
+This project calculates most and least volatile stocks using Apache HBase. I have included source code, jars as well as the shell script needed to run the program on my university datacenter/high performance cluster.

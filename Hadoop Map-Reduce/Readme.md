@@ -1,0 +1,1 @@
+This module calculated the 10 most and least volatile NASDAQ stocks from a small, medium and large sized dataset ranging from 2900-29000 tickers using Hadoop Map-Reduce. I have included the source code, report as well as a shell script needed to run the program on my university datacenter/high performance cluster.
